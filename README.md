@@ -3,4 +3,4 @@
 kickchan
 ========
 
-Bounded channels with invalidating readers
+Bounded channels with invalidating readers and non-blocking writes.
