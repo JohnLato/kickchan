@@ -19,6 +19,9 @@ module Chan.KickChan (
 , newReader
 , readNext
 -- ** type constraint helpers
+, KickChanS
+, KickChanV
+, KickChanU
 , kcUnboxed
 , kcStorable
 , kcDefault
@@ -157,6 +160,10 @@ readNext (KCReader {..}) = do
     readP <- atomicModifyIORef' kcrPos (\lastP -> let p = lastP+1 in (p,p))
     getKickChan kcrChan readP
 {-# INLINE readNext #-}
+
+type KickChanU a = KickChan (U.MVector RealWorld) a
+type KickChanS a = KickChan (S.MVector RealWorld) a
+type KickChanV a = KickChan (V.MVector RealWorld) a
 
 -- | Constrain a KickChan to work with an 'Unboxed' data storage
 kcUnboxed :: KickChan (U.MVector RealWorld) a -> KickChan (U.MVector RealWorld) a
