@@ -1,5 +1,4 @@
 {-# LANGUAGE CPP #-}
-{-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE RecordWildCards #-}
@@ -19,18 +18,22 @@ module Chan.KickChan (
 , KCReader
 , newReader
 , readNext
+-- ** type constraint helpers
+, kcUnboxed
+, kcStorable
+, kcDefault
 ) where
 
 import Control.Applicative
 import Control.Concurrent.MVar
 
 import Data.Bits
-import Data.Data
 import Data.IORef
 
 import Data.Vector.Generic.Mutable (MVector)
 import qualified Data.Vector.Generic.Mutable as M
-
+import qualified Data.Vector.Mutable as V
+import qualified Data.Vector.Storable.Mutable as S
 import qualified Data.Vector.Unboxed.Mutable as U
 import Control.Monad.Primitive
 
@@ -73,11 +76,11 @@ checkWithPosition await sz readP pos@(Position nextP acts) = case nextP - readP 
 
 -- | A Channel that drops elements from the end when a 'KCReader' lags too far
 -- behind the writer.
-data KickChan a = KickChan
+data KickChan v a = KickChan
     { kcSz  :: {-# UNPACK #-} !Int
     , kcPos :: (IORef (Position a))
-    , kcV   :: (U.MVector RealWorld a)
-    } deriving (Typeable)
+    , kcV   :: (v a)
+    }
 
 {- invariants
  - kcSz is a power of 2
@@ -85,7 +88,7 @@ data KickChan a = KickChan
 
 -- | Create a new 'KickChan' of the requested size.  The actual size will be
 -- rounded up to the next highest power of 2.
-newKickChan :: (MVector U.MVector a) => Int -> IO (KickChan a)
+newKickChan :: (MVector v' a, v ~ v' RealWorld) => Int -> IO (KickChan v a)
 newKickChan sz = do
     kcPos <- newIORef emptyPosition
     kcV <- M.new kcSz
@@ -95,7 +98,7 @@ newKickChan sz = do
 {-# INLINABLE newKickChan #-}
 
 -- | Get the size of a 'KickChan'.
-kcSize :: KickChan a -> Int
+kcSize :: KickChan v a -> Int
 kcSize KickChan {kcSz} = kcSz
 
 -- | Put a value into a 'KickChan'.
@@ -104,7 +107,7 @@ kcSize KickChan {kcSz} = kcSz
 --
 -- putKickChan will never block, instead 'KCReader's will be invalidated if
 -- they lag too far behind.
-putKickChan :: (MVector U.MVector a) => KickChan a -> a -> IO ()
+putKickChan :: (MVector v' a, v ~ v' RealWorld) => KickChan v a -> a -> IO ()
 putKickChan  KickChan {..} x = do
     (Position curSeq pending) <- atomicModifyIORef' kcPos incrPosition
     M.unsafeWrite kcV (curSeq .&. (kcSz-1)) x
@@ -114,7 +117,7 @@ putKickChan  KickChan {..} x = do
 -- | get a value from a 'KickChan', or 'Nothing' if no longer available.
 -- 
 -- O(1)
-getKickChan :: (MVector U.MVector a) => KickChan a -> Int -> IO (Maybe a)
+getKickChan :: (MVector v' a, v ~ v' RealWorld) => KickChan v a -> Int -> IO (Maybe a)
 getKickChan KickChan {..} readP = do
     x <- M.unsafeRead kcV (readP .&. (kcSz-1))
     await <- newEmptyMVar
@@ -125,8 +128,8 @@ getKickChan KickChan {..} readP = do
         Invalid -> return Nothing
 
 -- | A reader for a 'KickChan'
-data KCReader a = KCReader
-    { kcrChan :: {-# UNPACK #-} !(KickChan a)
+data KCReader v a = KCReader
+    { kcrChan :: {-# UNPACK #-} !(KickChan v a)
     , kcrPos  :: IORef Int
     }
 
@@ -137,7 +140,7 @@ data KCReader a = KCReader
 -- | create a new reader for a 'KickChan'.  The reader will be initialized to
 -- the head of the KickChan, so that an immediate call to 'readNext' will
 -- block (provided no new values have been put into the chan in the meantime).
-newReader :: KickChan a -> IO (KCReader a)
+newReader :: KickChan v a -> IO (KCReader v a)
 newReader kcrChan@KickChan{..} = do
     (Position writeP _) <- readIORef kcPos   
     kcrPos <- newIORef (writeP-1)
@@ -149,8 +152,20 @@ newReader kcrChan@KickChan{..} = do
 --
 -- if Nothing is returned, the reader has lagged the writer and values have
 -- been dropped.
-readNext :: (MVector U.MVector a) => KCReader a -> IO (Maybe a)
+readNext :: (MVector v' a, v ~ v' RealWorld) => KCReader v a -> IO (Maybe a)
 readNext (KCReader {..}) = do
     readP <- atomicModifyIORef' kcrPos (\lastP -> let p = lastP+1 in (p,p))
     getKickChan kcrChan readP
 {-# INLINE readNext #-}
+
+-- | Constrain a KickChan to work with an 'Unboxed' data storage
+kcUnboxed :: KickChan (U.MVector RealWorld) a -> KickChan (U.MVector RealWorld) a
+kcUnboxed = id
+
+-- | Constrain a KickChan to work with a standard boxed vector data storage
+kcDefault :: KickChan (V.MVector RealWorld) a -> KickChan (V.MVector RealWorld) a
+kcDefault = id
+
+-- | Constrain a KickChan to work with a 'Storable' data storage
+kcStorable :: KickChan (S.MVector RealWorld) a -> KickChan (S.MVector RealWorld) a
+kcStorable = id

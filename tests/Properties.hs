@@ -8,6 +8,7 @@ module Main (main) where
 
 import Chan.KickChan
 
+import Control.Applicative
 import Control.Concurrent
 import Control.Monad
 
@@ -35,14 +36,14 @@ tests =
 -- check writes are non-blocking
 checkNBWrites :: IO ()
 checkNBWrites = do
-    c <- newKickChan 2
+    c <- kcUnboxed <$> newKickChan 2
     H.assertEqual "correct size" 2 (kcSize c)
     mapM_ (\i -> putKickChan c i) [1..5::Int]
 
 -- check that a new reader is initialized to the head of a KickChan
 checkReadHead :: NonEmptyList Int -> Property
 checkReadHead (NonEmpty (x:xs)) = monadicIO $ do
-    c <- run $ newKickChan 5
+    c <- run $ kcDefault <$> newKickChan 5
     run $ mapM_ (putKickChan c) xs
     r <- run $ newReader c
     run $ putKickChan c x
@@ -52,7 +53,7 @@ checkReadHead (NonEmpty (x:xs)) = monadicIO $ do
 -- check write/read pairs stay synced
 checkReads :: [Int] -> Property
 checkReads xs = monadicIO $ do
-    c <- run $ newKickChan 2
+    c <- run $ kcStorable <$> newKickChan 2
     r <- run $ newReader c
     let checkEl x = do
           run $ putKickChan c x
@@ -63,7 +64,7 @@ checkReads xs = monadicIO $ do
 -- check that blocking reads work
 checkBlockRead :: IO ()
 checkBlockRead = do
-    c <- newKickChan 2
+    c <- kcUnboxed <$> newKickChan 2
     H.assertEqual "correct size" 2 (kcSize c)
     r <- newReader c
     resultvar <- newEmptyMVar
@@ -77,7 +78,7 @@ checkBlockRead = do
 
 checkInvalidating :: IO ()
 checkInvalidating = do
-    c <- newKickChan 3
+    c <- kcUnboxed <$> newKickChan 3
     H.assertEqual "correct size" 4 (kcSize c)
     r <- newReader c
     mapM_ (putKickChan c) [1..5::Int]
@@ -86,7 +87,7 @@ checkInvalidating = do
 
 checkTail :: IO ()
 checkTail = do
-    c <- newKickChan 3
+    c <- kcUnboxed <$> newKickChan 3
     H.assertEqual "correct size" 4 (kcSize c)
     r <- newReader c
     let xs = [1..4::Int]
