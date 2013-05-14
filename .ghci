@@ -1,0 +1,2 @@
+:set -optP-include -optP.cabal_macros.h
+:set -isrc
