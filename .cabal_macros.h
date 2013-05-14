@@ -21,3 +21,38 @@
   (major1) == 0 && (major2) <  10 || \
   (major1) == 0 && (major2) == 10 && (minor) <= 0)
 
+/* package HUnit-1.2.5.1 */
+#define VERSION_HUnit "1.2.5.1"
+#define MIN_VERSION_HUnit(major1,major2,minor) (\
+  (major1) <  1 || \
+  (major1) == 1 && (major2) <  2 || \
+  (major1) == 1 && (major2) == 2 && (minor) <= 5)
+
+/* package QuickCheck-2.4.2 */
+#define VERSION_QuickCheck "2.4.2"
+#define MIN_VERSION_QuickCheck(major1,major2,minor) (\
+  (major1) <  2 || \
+  (major1) == 2 && (major2) <  4 || \
+  (major1) == 2 && (major2) == 4 && (minor) <= 2)
+
+/* package test-framework-0.6.2 */
+#define VERSION_test_framework "0.6.2"
+#define MIN_VERSION_test_framework(major1,major2,minor) (\
+  (major1) <  0 || \
+  (major1) == 0 && (major2) <  6 || \
+  (major1) == 0 && (major2) == 6 && (minor) <= 2)
+
+/* package test-framework-hunit-0.3.0 */
+#define VERSION_test_framework_hunit "0.3.0"
+#define MIN_VERSION_test_framework_hunit(major1,major2,minor) (\
+  (major1) <  0 || \
+  (major1) == 0 && (major2) <  3 || \
+  (major1) == 0 && (major2) == 3 && (minor) <= 0)
+
+/* package test-framework-quickcheck2-0.2.12.4 */
+#define VERSION_test_framework_quickcheck2 "0.2.12.4"
+#define MIN_VERSION_test_framework_quickcheck2(major1,major2,minor) (\
+  (major1) <  0 || \
+  (major1) == 0 && (major2) <  2 || \
+  (major1) == 0 && (major2) == 2 && (minor) <= 12)
+
