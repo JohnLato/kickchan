@@ -28,6 +28,7 @@ tests =
   [ testCase "nonblocking write" checkNBWrites
   , testProperty "reader initial head" checkReadHead
   , testProperty "write/read sync" checkReads
+  , testProperty "currentLag" checkLag
   , testCase "blocking read" checkBlockRead
   , testCase "invalid read"  checkInvalidating
   , testCase "full buffer read" checkTail
@@ -94,3 +95,13 @@ checkTail = do
     mapM_ (putKickChan c) xs
     xs' <- replicateM 4 $ readNext r
     H.assertEqual "full buffer read" (map Just xs) xs'
+
+checkLag :: NonNegative Int -> NonNegative Int -> Property
+checkLag (NonNegative readLn) (NonNegative writeDiff) = (readLn < 2048 && writeDiff < 2048) ==> (monadicIO $ do
+    c <- run $ kcUnboxed <$> newKickChan 8
+    r <- run $ newReader c
+    lag <- run $ do
+        replicateM_ (readLn + writeDiff) (putKickChan c (1::Int))
+        replicateM_ readLn (readNext r)
+        currentLag r
+    assert $ lag == writeDiff )

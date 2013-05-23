@@ -18,6 +18,7 @@ module Chan.KickChan (
 , KCReader
 , newReader
 , readNext
+, currentLag
 -- ** type constraint helpers
 , KickChanS
 , KickChanV
@@ -160,6 +161,15 @@ readNext (KCReader {..}) = do
     readP <- atomicModifyIORef' kcrPos (\lastP -> let p = lastP+1 in (p,p))
     getKickChan kcrChan readP
 {-# INLINE readNext #-}
+
+-- | The lag between a 'KCReader' and its writer.  Mostly useful for
+-- determining if a call to 'readNext' will block.
+currentLag :: KCReader v a -> IO Int
+currentLag KCReader {..} = do
+    lastRead <- readIORef kcrPos
+    Position nextWrite _ <- readIORef $ kcPos kcrChan
+    return $! nextWrite - lastRead - 1
+
 
 type KickChanU a = KickChan (U.MVector RealWorld) a
 type KickChanS a = KickChan (S.MVector RealWorld) a
