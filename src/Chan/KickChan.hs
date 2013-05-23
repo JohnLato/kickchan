@@ -26,6 +26,10 @@ module Chan.KickChan (
 , kcUnboxed
 , kcStorable
 , kcDefault
+
+, KCReaderS
+, KCReaderV
+, KCReaderU
 ) where
 
 import Control.Applicative
@@ -174,6 +178,10 @@ currentLag KCReader {..} = do
 type KickChanU a = KickChan (U.MVector RealWorld) a
 type KickChanS a = KickChan (S.MVector RealWorld) a
 type KickChanV a = KickChan (V.MVector RealWorld) a
+
+type KCReaderU a = KCReader (U.MVector RealWorld) a
+type KCReaderS a = KCReader (S.MVector RealWorld) a
+type KCReaderV a = KCReader (V.MVector RealWorld) a
 
 -- | Constrain a KickChan to work with an 'Unboxed' data storage
 kcUnboxed :: KickChan (U.MVector RealWorld) a -> KickChan (U.MVector RealWorld) a
