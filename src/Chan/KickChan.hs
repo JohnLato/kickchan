@@ -14,6 +14,7 @@ module Chan.KickChan (
 , kcSize
 -- ** Writing
 , putKickChan
+, invalidateKickChan
 -- ** Reading
 , KCReader
 , newReader
@@ -32,7 +33,6 @@ module Chan.KickChan (
 , KCReaderU
 ) where
 
-import Control.Applicative
 import Control.Concurrent.MVar
 
 import Data.Bits
@@ -73,6 +73,13 @@ incrPosition :: Position a -> (Position a,Position a)
 incrPosition orig@(Position oldP _) = (newP,orig)
   where
     newP = Position (oldP+1) []
+
+-- increment a position by a given value
+incrPositionN :: Int -> Position a -> (Position a,Position a)
+incrPositionN wrapAmount orig@(Position oldP _) = (newP,orig)
+  where
+    newP = Position (oldP+wrapAmount) []
+
 
 data CheckResult = Await | Ok | Invalid
 
@@ -121,6 +128,12 @@ putKickChan  KickChan {..} x = do
     M.unsafeWrite kcV (curSeq .&. (kcSz-1)) x
     mapM_ (\v -> putMVar v (Just x)) pending
 {-# INLINE putKickChan #-}
+
+-- | Invalidate all current readers on a channel.
+invalidateKickChan :: KickChan v a -> IO ()
+invalidateKickChan KickChan {..} = do
+    (Position _ pending) <- atomicModifyIORef' kcPos (incrPositionN $ 1+kcSz)
+    mapM_ (flip putMVar Nothing) pending
 
 -- | get a value from a 'KickChan', or 'Nothing' if no longer available.
 -- 
