@@ -1,8 +1,9 @@
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE UndecidableInstances #-}
 
 module Main (main) where
 
@@ -32,6 +33,7 @@ tests =
   , testCase "blocking read" checkBlockRead
   , testCase "invalid read"  checkInvalidating
   , testCase "full buffer read" checkTail
+  , testCase "invalidating channels" checkKill
   ]
 
 -- check writes are non-blocking
@@ -105,3 +107,17 @@ checkLag (NonNegative readLn) (NonNegative writeDiff) = (readLn < 2048 && writeD
         replicateM_ readLn (readNext r)
         currentLag r
     assert $ lag == writeDiff )
+
+checkKill :: IO ()
+checkKill = do
+    c :: KickChanU Int <- kcUnboxed <$> newKickChan 4
+    r <- newReader c
+    invalidateKickChan c
+    b <- readNext r
+    H.assertEqual "reader should be invalid" Nothing b
+    r <- newReader c
+    resultvar <- newEmptyMVar
+    forkIO $ readNext r >>= putMVar resultvar
+    invalidateKickChan c
+    x' <- takeMVar resultvar
+    H.assertEqual "waiters should be invalid" Nothing x'
