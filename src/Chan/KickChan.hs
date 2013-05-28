@@ -57,7 +57,7 @@ atomicModifyIORef' ref f = do
 #endif
 
 -- internal structure to hold the channel head
-data Position a = Position {-# UNPACK #-} !Int [MVar a]
+data Position a = Position {-# UNPACK #-} !Int [MVar (Maybe a)]
 
 {- invariants
  - the Int is the next position to be written (buffer head, initialized to 0)
@@ -76,7 +76,7 @@ incrPosition orig@(Position oldP _) = (newP,orig)
 
 data CheckResult = Await | Ok | Invalid
 
-checkWithPosition :: MVar a -> Int -> Int -> Position a -> (Position a, CheckResult)
+checkWithPosition :: MVar (Maybe a) -> Int -> Int -> Position a -> (Position a, CheckResult)
 checkWithPosition await sz readP pos@(Position nextP acts) = case nextP - readP of
     0 -> (Position nextP (await:acts), Await) -- add a waiter to the current position
     dif | dif > 0 && dif <= sz -> (pos,Ok)
@@ -119,7 +119,7 @@ putKickChan :: (MVector v' a, v ~ v' RealWorld) => KickChan v a -> a -> IO ()
 putKickChan  KickChan {..} x = do
     (Position curSeq pending) <- atomicModifyIORef' kcPos incrPosition
     M.unsafeWrite kcV (curSeq .&. (kcSz-1)) x
-    mapM_ (\v -> putMVar v x) pending
+    mapM_ (\v -> putMVar v (Just x)) pending
 {-# INLINE putKickChan #-}
 
 -- | get a value from a 'KickChan', or 'Nothing' if no longer available.
@@ -132,7 +132,7 @@ getKickChan KickChan {..} readP = do
     result <- atomicModifyIORef' kcPos (checkWithPosition await kcSz readP)
     case result of
         Ok    -> return $ Just x
-        Await -> Just <$> takeMVar await
+        Await -> takeMVar await
         Invalid -> return Nothing
 
 -- | A reader for a 'KickChan'
