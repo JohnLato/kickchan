@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE NamedFieldPuns #-}
@@ -72,13 +73,13 @@ emptyPosition = Position 0 []
 incrPosition :: Position a -> (Position a,Position a)
 incrPosition orig@(Position oldP _) = (newP,orig)
   where
-    newP = Position (oldP+1) []
+    !newP = Position (oldP+1) []
 
 -- increment a position by a given value
 incrPositionN :: Int -> Position a -> (Position a,Position a)
 incrPositionN wrapAmount orig@(Position oldP _) = (newP,orig)
   where
-    newP = Position (oldP+wrapAmount) []
+    !newP = Position (oldP+wrapAmount) []
 
 
 data CheckResult = Await | Ok | Invalid
@@ -93,7 +94,7 @@ checkWithPosition await sz readP pos@(Position nextP acts) = case nextP - readP 
 -- behind the writer.
 data KickChan v a = KickChan
     { kcSz  :: {-# UNPACK #-} !Int
-    , kcPos :: (IORef (Position a))
+    , kcPos :: (MVar (Position a))
     , kcV   :: (v a)
     }
 
@@ -105,7 +106,7 @@ data KickChan v a = KickChan
 -- rounded up to the next highest power of 2.
 newKickChan :: (MVector v' a, v ~ v' RealWorld) => Int -> IO (KickChan v a)
 newKickChan sz = do
-    kcPos <- newIORef emptyPosition
+    kcPos <- newMVar emptyPosition
     kcV <- M.new kcSz
     return KickChan {..}
   where
@@ -124,15 +125,17 @@ kcSize KickChan {kcSz} = kcSz
 -- they lag too far behind.
 putKickChan :: (MVector v' a, v ~ v' RealWorld) => KickChan v a -> a -> IO ()
 putKickChan  KickChan {..} x = do
-    (Position curSeq pending) <- atomicModifyIORef' kcPos incrPosition
-    M.unsafeWrite kcV (curSeq .&. (kcSz-1)) x
+    pending <- modifyMVar kcPos (\pos -> do
+        let (newPos, Position curSeq pending) = incrPosition pos
+        M.unsafeWrite kcV (curSeq .&. (kcSz-1)) x
+        return (newPos, pending) )
     mapM_ (\v -> putMVar v (Just x)) pending
 {-# INLINE putKickChan #-}
 
 -- | Invalidate all current readers on a channel.
 invalidateKickChan :: KickChan v a -> IO ()
 invalidateKickChan KickChan {..} = do
-    (Position _ pending) <- atomicModifyIORef' kcPos (incrPositionN $ 1+kcSz)
+    (Position _ pending) <- modifyMVar kcPos (return . incrPositionN (1+kcSz))
     mapM_ (flip putMVar Nothing) pending
 
 -- | get a value from a 'KickChan', or 'Nothing' if no longer available.
@@ -140,9 +143,11 @@ invalidateKickChan KickChan {..} = do
 -- O(1)
 getKickChan :: (MVector v' a, v ~ v' RealWorld) => KickChan v a -> Int -> IO (Maybe a)
 getKickChan KickChan {..} readP = do
-    x <- M.unsafeRead kcV (readP .&. (kcSz-1))
     await <- newEmptyMVar
-    result <- atomicModifyIORef' kcPos (checkWithPosition await kcSz readP)
+    (result,x) <- modifyMVar kcPos $ \pos -> do
+        x <- M.unsafeRead kcV (readP .&. (kcSz-1))
+        let (newPos,result) = checkWithPosition await kcSz readP pos
+        return (newPos,(result,x))
     case result of
         Ok    -> return $ Just x
         Await -> takeMVar await
@@ -163,7 +168,7 @@ data KCReader v a = KCReader
 -- block (provided no new values have been put into the chan in the meantime).
 newReader :: KickChan v a -> IO (KCReader v a)
 newReader kcrChan@KickChan{..} = do
-    (Position writeP _) <- readIORef kcPos   
+    (Position writeP _) <- readMVar kcPos
     kcrPos <- newIORef (writeP-1)
     return KCReader {..}
 {-# INLINABLE newReader #-}
@@ -184,7 +189,7 @@ readNext (KCReader {..}) = do
 currentLag :: KCReader v a -> IO Int
 currentLag KCReader {..} = do
     lastRead <- readIORef kcrPos
-    Position nextWrite _ <- readIORef $ kcPos kcrChan
+    Position nextWrite _ <- readMVar $ kcPos kcrChan
     return $! nextWrite - lastRead - 1
 
 
