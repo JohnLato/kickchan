@@ -146,8 +146,6 @@ checkWithPosition :: MVar (Maybe a) -> Int -> Int -> Position a -> (Position a, 
 checkWithPosition await sz readP pos@(Position nextP pMap) =
   case nextP-readP of
       dif -- result should be ok.
-          -- note the passed-in size is 1 less than the actual size of the
-          -- channel, which gives us the actual boundary we want.
           | dif > 0 && dif <= sz -> (pos,Ok)
           -- requests that are too old or too far in the future
           | otherwise -> (pos,Invalid)
@@ -211,7 +209,8 @@ getKickChan KickChan {..} readP = do
     if proceed -- value is definitely committed.
       then do
         x <- M.unsafeRead kcV (readP .&. kcSz)
-        result <- atomicModifyIORef' kcPos (checkWithPosition await kcSz readP)
+        -- add 1 to kcSize because we store 1-size
+        result <- atomicModifyIORef' kcPos (checkWithPosition await (kcSz+1) readP)
         case result of
             Ok    -> return $ Just x
             Await -> takeMVar await
