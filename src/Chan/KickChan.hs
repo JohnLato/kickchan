@@ -123,6 +123,8 @@ checkWithPosition :: Int -> Int -> Position a -> (Position a, CheckResult)
 checkWithPosition sz readP pos@(Position nextP _pMap) =
   case nextP-readP of
       dif -- result should be ok.
+          -- note the passed-in size is 1 less than the actual size of the
+          -- channel, which gives us the actual boundary we want.
           | dif > 0 && dif <= sz -> (pos,Ok)
           -- requests that are too old or too far in the future
           | otherwise -> (pos,Invalid)
@@ -141,18 +143,20 @@ data KickChan v a = KickChan
 
 -- | Create a new 'KickChan' of the requested size.  The actual size will be
 -- rounded up to the next highest power of 2.
+-- The stored size will have one subtracted, because that's the value we use
+-- for masking, which is the most common operation.
 newKickChan :: (MVector v' a, v ~ v' RealWorld) => Int -> IO (KickChan v a)
 newKickChan sz = do
     kcPos <- newIORef emptyPosition
-    kcV <- M.new kcSz
+    kcV <- M.new (kcSz+1)
     return KickChan {..}
   where
-    kcSz = 2^(ceiling (logBase 2 (fromIntegral $ sz) :: Double) :: Int)
+    kcSz = 2^(ceiling (logBase 2 (fromIntegral $ sz) :: Double) :: Int) - 1
 {-# INLINABLE newKickChan #-}
 
 -- | Get the size of a 'KickChan'.
 kcSize :: KickChan v a -> Int
-kcSize KickChan {kcSz} = kcSz
+kcSize KickChan {kcSz} = kcSz+1
 
 -- | Put a value into a 'KickChan'.
 --
@@ -163,7 +167,7 @@ kcSize KickChan {kcSz} = kcSz
 putKickChan :: (MVector v' a, v ~ v' RealWorld) => KickChan v a -> a -> IO ()
 putKickChan  KickChan {..} x = do
     curSeq <- atomicModifyIORef' kcPos incrPosition
-    M.unsafeWrite kcV (curSeq .&. (kcSz-1)) x
+    M.unsafeWrite kcV (curSeq .&. kcSz) x
     waiting <- atomicModifyIORef' kcPos $ commit curSeq
     Fold.mapM_ (\v -> putMVar v (Just x)) waiting
 {-# INLINE putKickChan #-}
@@ -171,7 +175,7 @@ putKickChan  KickChan {..} x = do
 -- | Invalidate all current readers on a channel.
 invalidateKickChan :: KickChan v a -> IO ()
 invalidateKickChan KickChan {..} = do
-    waiting <- atomicModifyIORef' kcPos (invalidatePosition $ 1+kcSz)
+    waiting <- atomicModifyIORef' kcPos (invalidatePosition $ 2+kcSz)
     Fold.mapM_ (flip putMVar Nothing) waiting
 
 -- | get a value from a 'KickChan', or 'Nothing' if no longer available.
@@ -183,7 +187,7 @@ getKickChan KickChan {..} readP = do
     proceed <- atomicModifyIORef' kcPos $ readyOrWait await readP
     if proceed -- value is definitely committed.
       then do
-        x <- M.unsafeRead kcV (readP .&. (kcSz-1))
+        x <- M.unsafeRead kcV (readP .&. kcSz)
         result <- atomicModifyIORef' kcPos (checkWithPosition kcSz readP)
         case result of
             Ok    -> return $ Just x
