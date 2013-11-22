@@ -20,6 +20,7 @@ library
   exposed-modules:     Chan.KickChan
   -- other-modules:       
   build-depends:       base >= 4.5 && < 5
+                      ,containers >= 0.4 && < 0.6
                       ,primitive >= 0.5
                       ,vector >= 0.8
 
@@ -32,6 +33,7 @@ Test-Suite test
 
   build-depends:
       base,
+      containers,
       primitive,
       vector,
       HUnit                      >= 1.1 && < 2,

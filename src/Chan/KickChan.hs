@@ -37,6 +37,10 @@ import Control.Concurrent.MVar
 
 import Data.Bits
 import Data.IORef
+import Data.IntMap (IntMap)
+import qualified Data.IntMap as IM
+import Data.Foldable as Fold
+import Data.Maybe (maybeToList)
 
 import Data.Vector.Generic.Mutable (MVector)
 import qualified Data.Vector.Generic.Mutable as M
@@ -57,7 +61,10 @@ atomicModifyIORef' ref f = do
 #endif
 
 -- internal structure to hold the channel head
-data Position a = Position {-# UNPACK #-} !Int [MVar (Maybe a)]
+data Position a = Position
+    { nSeq     :: {-# UNPACK #-} !Int
+    , waiting  :: IntMap [MVar (Maybe a)]
+    }
 
 {- invariants
  - the Int is the next position to be written (buffer head, initialized to 0)
@@ -66,28 +73,59 @@ data Position a = Position {-# UNPACK #-} !Int [MVar (Maybe a)]
 -}
 
 emptyPosition :: Position a
-emptyPosition = Position 0 []
+emptyPosition = Position 0 IM.empty
 
--- increment a Position, returning the old position
-incrPosition :: Position a -> (Position a,Position a)
-incrPosition orig@(Position oldP _) = (newP,orig)
+-- increment a Position, returning the current sequence number
+incrPosition :: Position a -> (Position a,Int)
+incrPosition (Position curSeq pMap) = (newP,curSeq)
   where
-    newP = Position (oldP+1) []
+    newP = Position
+           { nSeq = curSeq+1
+           , waiting=IM.insertWith (++) curSeq [] pMap
+           }
 
--- increment a position by a given value
-incrPositionN :: Int -> Position a -> (Position a,Position a)
-incrPositionN wrapAmount orig@(Position oldP _) = (newP,orig)
+-- increment a position by a given value, which must be enough to wrap the
+-- buffer.  Returns a list of all current waiting readers.
+invalidatePosition :: Int -> Position a -> (Position a,[MVar (Maybe a)])
+invalidatePosition wrapAmount (Position oldP waiting) = (newP,pList)
   where
-    newP = Position (oldP+wrapAmount) []
+    newP = Position (oldP+wrapAmount) IM.empty
+    pList = Prelude.concat $ IM.elems waiting
 
+-- | commit a value that's been written to the vector.
+commit :: Int -> Position a -> (Position a,[MVar (Maybe a)])
+commit seqNum (Position nSeq pMap) = (newP,pList)
+  where
+    pList = Prelude.concat $ maybeToList pending
+    (pending,pMap') = IM.updateLookupWithKey (\_ _ -> Nothing) seqNum pMap
+    newP = Position nSeq pMap'
 
-data CheckResult = Await | Ok | Invalid
+data CheckResult = Ok | Invalid
 
-checkWithPosition :: MVar (Maybe a) -> Int -> Int -> Position a -> (Position a, CheckResult)
-checkWithPosition await sz readP pos@(Position nextP acts) = case nextP - readP of
-    0 -> (Position nextP (await:acts), Await) -- add a waiter to the current position
-    dif | dif > 0 && dif <= sz -> (pos,Ok)
-        | otherwise -> (pos,Invalid) -- requests that are too old or too far in the future
+-- check if a value is possibly ready to be read from.  If so, return True,
+-- else add ourselves to the waiting map on that value.
+--
+-- if readyOrWait returns True, the value has definitely already been commited
+-- (the sequence number has been assigned to a writer but isn't in the pending
+-- map).  It may have been over-written however.
+readyOrWait :: MVar (Maybe a) -> Int -> Position a -> (Position a, Bool)
+readyOrWait await readP p@(Position nextP pMap) =
+  case IM.updateLookupWithKey (\_ xs -> Just $ await:xs) readP pMap of
+    (Just _waitList,pMap') -> (p { waiting = pMap' }, False)
+    (Nothing,_)
+      | readP >= nextP ->
+          (p{waiting=IM.insert readP [await] pMap} ,False)
+      | otherwise -> (p,True)
+
+-- we know the value has been committed, we just need to check that it's still
+-- valid.
+checkWithPosition :: Int -> Int -> Position a -> (Position a, CheckResult)
+checkWithPosition sz readP pos@(Position nextP _pMap) =
+  case nextP-readP of
+      dif -- result should be ok.
+          | dif > 0 && dif <= sz -> (pos,Ok)
+          -- requests that are too old or too far in the future
+          | otherwise -> (pos,Invalid)
 
 -- | A Channel that drops elements from the end when a 'KCReader' lags too far
 -- behind the writer.
@@ -124,29 +162,33 @@ kcSize KickChan {kcSz} = kcSz
 -- they lag too far behind.
 putKickChan :: (MVector v' a, v ~ v' RealWorld) => KickChan v a -> a -> IO ()
 putKickChan  KickChan {..} x = do
-    (Position curSeq pending) <- atomicModifyIORef' kcPos incrPosition
+    curSeq <- atomicModifyIORef' kcPos incrPosition
     M.unsafeWrite kcV (curSeq .&. (kcSz-1)) x
-    mapM_ (\v -> putMVar v (Just x)) pending
+    waiting <- atomicModifyIORef' kcPos $ commit curSeq
+    Fold.mapM_ (\v -> putMVar v (Just x)) waiting
 {-# INLINE putKickChan #-}
 
 -- | Invalidate all current readers on a channel.
 invalidateKickChan :: KickChan v a -> IO ()
 invalidateKickChan KickChan {..} = do
-    (Position _ pending) <- atomicModifyIORef' kcPos (incrPositionN $ 1+kcSz)
-    mapM_ (flip putMVar Nothing) pending
+    waiting <- atomicModifyIORef' kcPos (invalidatePosition $ 1+kcSz)
+    Fold.mapM_ (flip putMVar Nothing) waiting
 
 -- | get a value from a 'KickChan', or 'Nothing' if no longer available.
 -- 
 -- O(1)
 getKickChan :: (MVector v' a, v ~ v' RealWorld) => KickChan v a -> Int -> IO (Maybe a)
 getKickChan KickChan {..} readP = do
-    x <- M.unsafeRead kcV (readP .&. (kcSz-1))
     await <- newEmptyMVar
-    result <- atomicModifyIORef' kcPos (checkWithPosition await kcSz readP)
-    case result of
-        Ok    -> return $ Just x
-        Await -> takeMVar await
-        Invalid -> return Nothing
+    proceed <- atomicModifyIORef' kcPos $ readyOrWait await readP
+    if proceed -- value is definitely committed.
+      then do
+        x <- M.unsafeRead kcV (readP .&. (kcSz-1))
+        result <- atomicModifyIORef' kcPos (checkWithPosition kcSz readP)
+        case result of
+            Ok    -> return $ Just x
+            Invalid -> return Nothing
+      else takeMVar await
 
 -- | A reader for a 'KickChan'
 data KCReader v a = KCReader
@@ -163,7 +205,7 @@ data KCReader v a = KCReader
 -- block (provided no new values have been put into the chan in the meantime).
 newReader :: KickChan v a -> IO (KCReader v a)
 newReader kcrChan@KickChan{..} = do
-    (Position writeP _) <- readIORef kcPos   
+    (Position writeP _pMap) <- readIORef kcPos
     kcrPos <- newIORef (writeP-1)
     return KCReader {..}
 {-# INLINABLE newReader #-}
@@ -184,8 +226,8 @@ readNext (KCReader {..}) = do
 currentLag :: KCReader v a -> IO Int
 currentLag KCReader {..} = do
     lastRead <- readIORef kcrPos
-    Position nextWrite _ <- readIORef $ kcPos kcrChan
-    return $! nextWrite - lastRead - 1
+    Position nextWrite pMap <- readIORef $ kcPos kcrChan
+    return $! nextWrite - lastRead - IM.size pMap - 1
 
 
 type KickChanU a = KickChan (U.MVector RealWorld) a
