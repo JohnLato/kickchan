@@ -104,6 +104,10 @@ data CheckResult = Await | Ok | Invalid
 
 -- check if a value is possibly ready to be read from.  If so, return True,
 -- else add ourselves to the waiting map on that value.
+--
+-- if readyOrWait returns True, the value has definitely already been commited
+-- (the sequence number has been assigned to a writer but isn't in the pending
+-- map).  It may have been over-written however.
 readyOrWait :: MVar (Maybe a) -> Int -> Position a -> (Position a, Bool)
 readyOrWait await readP p@(Position nextP pMap) =
   case IM.updateLookupWithKey (\_ xs -> Just $ await:xs) readP pMap of
@@ -113,17 +117,11 @@ readyOrWait await readP p@(Position nextP pMap) =
           (p{waiting=IM.insert readP [await] pMap} ,False)
       | otherwise -> (p,True)
 
+-- we know the value has been committed, we just need to check that it's still
+-- valid.
 checkWithPosition :: MVar (Maybe a) -> Int -> Int -> Position a -> (Position a, CheckResult)
 checkWithPosition await sz readP pos@(Position nextP pMap) =
-  case IM.updateLookupWithKey (\_ xs -> Just $ await:xs) readP pMap of
-    -- the key was in the map, so it's not committed yet.
-    (Just _waitList,pMap') -> (pos { waiting = pMap' }, Await)
-    -- key not in map, so the value is either already committed or not yet
-    -- claimed by a writer.
-    (Nothing,pMap') -> case nextP-readP of
-      -- requesting the next position, but it hasn't been claimed by a writer
-      -- (or another reader), so insert it into the map.
-      0 -> (pos { waiting = IM.insert nextP [await] pMap' }, Await)
+  case nextP-readP of
       dif -- result should be ok.
           -- note the passed-in size is 1 less than the actual size of the
           -- channel, which gives us the actual boundary we want.
@@ -187,7 +185,7 @@ getKickChan :: (MVector v' a, v ~ v' RealWorld) => KickChan v a -> Int -> IO (Ma
 getKickChan KickChan {..} readP = do
     await <- newEmptyMVar
     proceed <- atomicModifyIORef' kcPos $ readyOrWait await readP
-    if proceed
+    if proceed -- value is definitely committed.
       then do
         x <- M.unsafeRead kcV (readP .&. kcSz)
         result <- atomicModifyIORef' kcPos (checkWithPosition await kcSz readP)
