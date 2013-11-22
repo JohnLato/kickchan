@@ -110,7 +110,7 @@ readyOrWait await readP p@(Position nextP pMap) =
     (Just _waitList,pMap') -> (p { waiting = pMap' }, False)
     (Nothing,_)
       | readP >= nextP ->
-          (p{waiting=IM.insertWith (++) readP [await] pMap} ,False)
+          (p{waiting=IM.insert readP [await] pMap} ,False)
       | otherwise -> (p,True)
 
 checkWithPosition :: MVar (Maybe a) -> Int -> Int -> Position a -> (Position a, CheckResult)
