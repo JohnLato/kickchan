@@ -67,9 +67,32 @@ data Position a = Position
     }
 
 {- invariants
- - the Int is the next position to be written (buffer head, initialized to 0)
- - the Int changes monotonically
- - the [MVar a] are actions to be run when the next value is ready
+ - nSeq is the next position to be written (buffer head, initialized to 0)
+ - nSeq changes monotonically
+ - the minimum key of the 'waiting' map is >= nSeq.
+ -
+ - Use a two-stage commit strategy.  Writers first claim a sequence number.
+ - This causes nSeq to be incremented (so subsequent writers get a new number)
+ - and inserts the claimed sequence number into the 'waiting' map with an
+ - empty list.  Writers then write to the vector and commit the write, which
+ - returns a list of readers waiting for that sequence to be written.  The
+ - writer then writes the value to every waiting reader.
+ -
+ - Reading uses a similar two-stage process.  First the reader checks if the
+ - value has been committed.  If not it blocks, otherwise it reads from the
+ - buffer and checks if the read position was valid (hasn't been
+ - over-written).
+ -
+ - One race condition remains.
+ -   writer1          writer2
+ -   claim seq
+ -                    claim seq+kcSz (this wraps the buffer)
+ -                    write to seq+kcSz
+ -                    commit
+ -   write to seq
+ -   commit
+ -
+ -   in this case writer1 will over-write the value written by writer2.
 -}
 
 emptyPosition :: Position a
