@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE NamedFieldPuns #-}
@@ -34,6 +35,7 @@ module Chan.KickChan (
 ) where
 
 import Control.Concurrent.MVar
+import Control.Concurrent (yield)
 
 import Data.Bits
 import Data.IORef
@@ -98,12 +100,17 @@ data Position a = Position
 emptyPosition :: Position a
 emptyPosition = Position 0 IM.empty
 
--- increment a Position, returning the current sequence number
-incrPosition :: Position a -> (Position a,Int)
-incrPosition (Position curSeq pMap) = (newP,curSeq)
+-- increment a Position, returning the current sequence number or Nothing
+-- if the buffer is full
+incrPosition :: Int -> Position a -> (Position a,Maybe Int)
+incrPosition sz oldP@(Position curSeq pMap) = case IM.minViewWithKey pMap of
+    Just ((lowKey,_),_)
+        | lowKey+sz <= curSeq -> (oldP,Nothing)
+    _ -> (newP,Just curSeq)
   where
+    !newSeq = curSeq+1
     newP = Position
-           { nSeq = curSeq+1
+           { nSeq = newSeq
            , waiting=IM.insertWith (++) curSeq [] pMap
            }
 
@@ -187,10 +194,14 @@ kcSize KickChan {kcSz} = kcSz+1
 -- they lag too far behind.
 putKickChan :: (MVector v' a, v ~ v' RealWorld) => KickChan v a -> a -> IO ()
 putKickChan  KickChan {..} x = do
-    curSeq <- atomicModifyIORef' kcPos incrPosition
+    curSeq <- claim
     M.unsafeWrite kcV (curSeq .&. kcSz) x
     waiting <- atomicModifyIORef' kcPos $ commit curSeq
     Fold.mapM_ (\v -> putMVar v (Just x)) waiting
+  where
+    claim = do
+        curSeq'm <- atomicModifyIORef' kcPos (incrPosition (kcSz+1))
+        maybe (yield >> claim) return curSeq'm
 {-# INLINE putKickChan #-}
 
 -- | Invalidate all current readers on a channel.
