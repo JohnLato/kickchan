@@ -84,17 +84,6 @@ data Position a = Position
  - value has been committed.  If not it blocks, otherwise it reads from the
  - buffer and checks if the read position was valid (hasn't been
  - over-written).
- -
- - One race condition remains.
- -   writer1          writer2
- -   claim seq
- -                    claim seq+kcSz (this wraps the buffer)
- -                    write to seq+kcSz
- -                    commit
- -   write to seq
- -   commit
- -
- -   in this case writer1 will over-write the value written by writer2.
 -}
 
 emptyPosition :: Position a
@@ -166,7 +155,7 @@ data KickChan v a = KickChan
     }
 
 {- invariants
- - kcSz is a power of 2
+ - kcSz is a power of 2 - 1
  -}
 
 -- | Create a new 'KickChan' of the requested size.  The actual size will be
@@ -188,10 +177,11 @@ kcSize KickChan {kcSz} = kcSz+1
 
 -- | Put a value into a 'KickChan'.
 --
--- O(k), where k == number of readers on this channel.
+-- if there are multiple writers, putKickChan may block if one writer has
+-- wrapped around and a write is pending to the underlying storage location.
 --
--- putKickChan will never block, instead 'KCReader's will be invalidated if
--- they lag too far behind.
+-- putKickChan will never block on readers, instead 'KCReader's will be
+-- invalidated if they lag too far behind.
 putKickChan :: (MVector v' a, v ~ v' RealWorld) => KickChan v a -> a -> IO ()
 putKickChan  KickChan {..} x = do
     curSeq <- claim
@@ -212,7 +202,8 @@ invalidateKickChan KickChan {..} = do
 
 -- | get a value from a 'KickChan', or 'Nothing' if no longer available.
 -- 
--- O(1)
+-- if there are no new values, getKickChan will block until a new value is
+-- written, or the channel is invalidated.
 getKickChan :: (MVector v' a, v ~ v' RealWorld) => KickChan v a -> Int -> IO (Maybe a)
 getKickChan KickChan {..} readP = do
     await <- newEmptyMVar
