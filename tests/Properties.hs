@@ -12,6 +12,8 @@ import Chan.KickChan
 import Control.Applicative
 import Control.Concurrent
 import Control.Monad
+import Control.Monad.Fix
+import Data.Vector.Mutable (IOVector)
 
 import qualified Test.HUnit as H
 import Test.QuickCheck
@@ -34,6 +36,7 @@ tests =
   , testCase "invalid read"  checkInvalidating
   , testCase "full buffer read" checkTail
   , testCase "invalidating channels" checkKill
+  , testCase "simple run" raceTest
   ]
 
 -- check writes are non-blocking
@@ -121,3 +124,32 @@ checkKill = do
     invalidateKickChan c
     x' <- takeMVar resultvar
     H.assertEqual "waiters should be invalid" Nothing x'
+
+-- check that we get the expected results with 2 writers and 2 readers.
+-- This doesn't prove it's correct, but it can show if it's wrong.
+raceTest = do
+  kc <- newKickChan 10
+    :: IO (KickChan IOVector (Either Int Int))
+  rdr1 <- newReader kc
+  rdr2 <- newReader kc
+
+  -- spawn writer
+  _ <- forkIO $ mkWriter kc Left
+  _ <- forkIO $ mkWriter kc Right
+
+  forkIO $ mkReader rdr1 (either (const Nothing) Just)
+  mkReader rdr2 (either Just (const Nothing))
+
+numIters = 40000
+
+mkWriter kc proj = forM_ [0::Int .. numIters] $ \i -> do
+    putKickChan kc (proj i)
+    when (mod i 2 == 0) $ threadDelay 100
+
+mkReader rdr dir = flip fix 0 $ \self expected -> if expected > numIters then return () else do
+    v <- (fmap . fmap) dir $ readNext rdr
+    case v of
+        Nothing -> error "reader got Nothing..."
+        Just Nothing -> self expected
+        Just (Just x) | x == expected -> self $ expected + 1
+                      | otherwise -> error $ "expected " ++ show expected ++ " but got " ++ show x
