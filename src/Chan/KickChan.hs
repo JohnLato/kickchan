@@ -36,6 +36,7 @@ module Chan.KickChan (
 
 import Control.Concurrent.MVar
 import Control.Concurrent (yield)
+import Control.Exception
 
 import Data.Bits
 import Data.IORef
@@ -183,11 +184,17 @@ kcSize KickChan {kcSz} = kcSz+1
 -- putKickChan will never block on readers, instead 'KCReader's will be
 -- invalidated if they lag too far behind.
 putKickChan :: (MVector v' a, v ~ v' RealWorld) => KickChan v a -> a -> IO ()
-putKickChan  KickChan {..} x = do
+putKickChan  KickChan {..} x = mask_ $ do
+    -- none of these actions should raise exceptions of their own.
+    -- For async exceptions, everything should be uninterruptible,
+    -- except 'claim', which calls yield.  But if an async exception
+    -- arises at that point it's ok because we haven't actually
+    -- claimed a sequence number yet, so there's nothing to clean up.
     curSeq <- claim
     M.unsafeWrite kcV (curSeq .&. kcSz) x
     waiting <- atomicModifyIORef' kcPos $ commit curSeq
     Fold.mapM_ (\v -> putMVar v (Just x)) waiting
+    -- these shouldn't be interrupted as the MVars are definitely empty.
   where
     claim = do
         curSeq'm <- atomicModifyIORef' kcPos (incrPosition (kcSz+1))
@@ -196,9 +203,10 @@ putKickChan  KickChan {..} x = do
 
 -- | Invalidate all current readers on a channel.
 invalidateKickChan :: KickChan v a -> IO ()
-invalidateKickChan KickChan {..} = do
+invalidateKickChan KickChan {..} = mask_ $ do
     waiting <- atomicModifyIORef' kcPos (invalidatePosition $ 2+kcSz)
     Fold.mapM_ (flip putMVar Nothing) waiting
+    -- see comments for putKickChan WRT exceptions.
 
 -- | get a value from a 'KickChan', or 'Nothing' if no longer available.
 -- 
@@ -207,6 +215,9 @@ invalidateKickChan KickChan {..} = do
 getKickChan :: (MVector v' a, v ~ v' RealWorld) => KickChan v a -> Int -> IO (Maybe a)
 getKickChan KickChan {..} readP = do
     await <- newEmptyMVar
+    -- we don't need any special exception handling.  The worst that can
+    -- happen is we leave an empty MVar in the Position, but in that case
+    -- the pending write will clear it out.
     proceed <- atomicModifyIORef' kcPos $ readyOrWait await readP
     if proceed -- value is definitely committed.
       then do
