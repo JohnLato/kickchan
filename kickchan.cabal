@@ -29,7 +29,7 @@ Test-Suite test
   type: exitcode-stdio-1.0
   main-is: Properties.hs
   hs-source-dirs: tests src
-  ghc-options:    -fhpc -hpcdir -threaded dist/hpc/mix/kickchan-0.1.0.3
+  ghc-options:    -threaded
 
   build-depends:
       base,
