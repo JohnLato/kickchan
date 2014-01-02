@@ -139,13 +139,13 @@ readyOrWait await readP p@(Position nextP pMap) =
 
 -- we know the value has been committed, we just need to check that it's still
 -- valid.
-checkWithPosition :: Int -> Int -> Position a -> CheckResult
-checkWithPosition sz readP (Position nextP _pMap) =
+checkWithPosition :: Int -> Int -> Position a -> (Position a, CheckResult)
+checkWithPosition sz readP pos@(Position nextP _pMap) =
   case nextP-readP of
       dif -- result should be ok.
-          | dif > 0 && dif <= sz -> Ok
+          | dif > 0 && dif <= sz -> (pos,Ok)
           -- requests that are too old or too far in the future
-          | otherwise -> Invalid
+          | otherwise -> (pos,Invalid)
 
 -- | A Channel that drops elements from the end when a 'KCReader' lags too far
 -- behind the writer.
@@ -222,9 +222,9 @@ getKickChan KickChan {..} readP = do
     if proceed -- value is definitely committed.
       then do
         x <- M.unsafeRead kcV (readP .&. kcSz)
-        checkedPos <- readIORef kcPos
         -- add 1 to kcSize because we store 1-size
-        case checkWithPosition (kcSz+1) readP checkedPos of
+        result <- atomicModifyIORef' kcPos (checkWithPosition (kcSz+1) readP)
+        case result of
             Ok    -> return $ Just x
             Invalid -> return Nothing
       else takeMVar await
